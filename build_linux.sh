@@ -1,15 +1,14 @@
 #!/bin/bash
-# build_linux.sh — Build Linux binary
 echo "============================================"
-echo " ZKTeco Utility — Linux Build Script"
+echo " ZKTeco Utility — Linux Build"
 echo "============================================"
 
-echo "[1/3] Install dependencies..."
 pip install pyzk openpyxl pyinstaller --quiet
 
-echo "[2/3] Build binary..."
 pyinstaller --onefile --windowed \
   --name "ZKTeco_Utility_Linux" \
+  --add-data "app_icon.png:." \
+  --add-data "i18n.py:." \
   --collect-all openpyxl \
   --collect-all zk \
   --hidden-import openpyxl \
@@ -26,7 +25,5 @@ pyinstaller --onefile --windowed \
   --exclude-module unittest \
   zkteco_app.py
 
-echo "[3/3] Done!"
-echo ""
-echo "Binary: dist/ZKTeco_Utility_Linux"
-echo "Jalankan: chmod +x dist/ZKTeco_Utility_Linux && ./dist/ZKTeco_Utility_Linux"
+echo "Done: dist/ZKTeco_Utility_Linux"
+echo "Run: chmod +x dist/ZKTeco_Utility_Linux && ./dist/ZKTeco_Utility_Linux"

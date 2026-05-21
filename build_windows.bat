@@ -6,12 +6,16 @@ echo ============================================
 echo.
 
 echo [1/3] Install dependencies...
-pip install pyzk openpyxl pyinstaller --quiet
+pip install pyzk openpyxl pyinstaller pillow --quiet
 
 echo.
 echo [2/3] Build exe...
 pyinstaller --onefile --windowed ^
   --name "ZKTeco_Utility" ^
+  --icon "app_icon.ico" ^
+  --add-data "app_icon.ico;." ^
+  --add-data "app_icon.png;." ^
+  --add-data "i18n.py;." ^
   --collect-all openpyxl ^
   --collect-all zk ^
   --hidden-import openpyxl ^
@@ -46,11 +50,8 @@ if %errorlevel% neq 0 (
 )
 
 echo.
-echo [3/3] Selesai!
+echo [3/3] Done!
 echo.
-echo ============================================
-echo  EXE: dist\ZKTeco_Utility.exe
-echo  Taruh EXE di folder tersendiri agar
-echo  config.json dan absensi.db tersimpan rapi.
-echo ============================================
+echo EXE: dist\ZKTeco_Utility.exe
+echo Taruh EXE + config.json di folder tersendiri.
 pause

@@ -1,159 +1,138 @@
 # ZKTeco eFace10 Utility
 
-Aplikasi desktop untuk manajemen mesin absensi wajah ZKTeco eFace10.
-Dibuat dengan Python + Tkinter, tanpa ADMS, koneksi langsung via TCP.
+<p align="center">
+  <img src="app_icon.png" width="120" alt="ZKTeco x CV RAJ Logo"/>
+</p>
 
-![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-blue)
-![Python](https://img.shields.io/badge/python-3.9%2B-green)
-![License](https://img.shields.io/badge/license-MIT-brightgreen)
+<p align="center">
+  <strong>Desktop utility for ZKTeco eFace10 face recognition attendance device.</strong><br/>
+  Direct TCP connection — no ADMS required.
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-blue"/>
+  <img src="https://img.shields.io/badge/python-3.9%2B-green"/>
+  <img src="https://img.shields.io/badge/license-MIT-brightgreen"/>
+  <img src="https://img.shields.io/github/v/release/nikokevin29/zkteco-utility"/>
+</p>
 
 ---
 
-## Fitur
+## Features
 
-- 🔌 **Koneksi langsung** ke mesin via TCP (tanpa ADMS)
-- 🕐 **Set waktu mesin** — sync RTC ke waktu PC
-- 📥 **Tarik data absensi** — simpan ke database SQLite lokal
-- 📊 **Generate Excel report** — kartu absensi, rekap, keterlambatan, log detail
-- 👤 **Kelola user** — lihat daftar karyawan langsung dari mesin
-- ℹ️ **Info device** — firmware, serial, jumlah log
-- 🗑 **Clear log mesin** — hapus memori setelah ditarik
-- 💾 **Auto backup CSV** setiap kali tarik data
-- ⬆️ **Auto update** — cek & download versi terbaru dari GitHub
-- 🖥 **Cross-platform** — Windows, Linux, macOS
+| Feature | Description |
+|---------|-------------|
+| Direct TCP connection | Connects to device via TCP — no ADMS/cloud needed |
+| Set device time | Sync RTC clock to PC time in one click |
+| Pull attendance | Fetch all logs, auto-deduplicate, save to local SQLite |
+| Excel report | Attendance card, recap, late report, log detail |
+| User management | View registered users synced from device |
+| Device info | Firmware, serial number, memory usage |
+| Clear device log | Free up device memory after pulling data |
+| Auto backup CSV | Raw backup on every pull |
+| Auto update | Check and download latest version from GitHub |
+| Multi-language | English / Bahasa Indonesia |
+| Cross-platform | Windows, Linux, macOS |
 
-### Excel Report berisi:
-| Sheet | Isi |
-|-------|-----|
-| Kartu Absensi (per bulan) | Jam masuk tiap hari, warna status, total hadir, terlambat, lembur |
-| Rekap | Ringkasan bulanan per karyawan + % kehadiran |
-| Keterlambatan | Detail siapa terlambat berapa menit |
-| Log Detail | Semua baris lengkap + total tap per hari |
+### Smart Deduplication
+All face scan taps on the same day collapse to **2 valid records**:
+- **Earliest tap** = check-in
+- **Latest tap** = check-out
+- All taps in between are ignored
 
 ---
 
 ## Download
 
-👉 **[Download EXE terbaru di Releases](https://github.com/nikokevin29/zkteco-utility/releases/latest)**
+### [Latest Release](https://github.com/nikokevin29/zkteco-utility/releases/latest)
 
 | Platform | File |
 |----------|------|
-| Windows  | `ZKTeco_Utility.exe` |
+| Windows  | `ZKTeco_Utility.exe` (~13 MB) |
 | Linux    | `ZKTeco_Utility_Linux` |
 | macOS    | `ZKTeco_Utility_macOS` |
 
 ---
 
-## Cara Pakai
+## Quick Start
 
-### Windows
-1. Download `ZKTeco_Utility.exe`
-2. Buat folder baru (misal `C:\ZKTeco\`), taruh EXE di sana
-3. Jalankan EXE
-4. Isi IP mesin dan port, klik **Test Koneksi**
-5. Ikuti alur: **① Set Waktu → ② Tarik Data → ③ Generate Excel**
+**Windows:** Download EXE, place in a dedicated folder (not Downloads), run.
 
-### Linux / macOS
+**Linux / macOS:**
 ```bash
 chmod +x ZKTeco_Utility_Linux
 ./ZKTeco_Utility_Linux
 ```
 
-### Jalankan dari source (semua OS)
+**From source:**
 ```bash
-# Clone repo
 git clone https://github.com/nikokevin29/zkteco-utility.git
 cd zkteco-utility
-
-# Install dependencies
 pip install pyzk openpyxl
-
-# Jalankan
 python zkteco_app.py
 ```
 
 ---
 
-## Build dari Source
+## Configuration
 
-### Windows
-```
-build_windows.bat
-```
-
-### Linux
-```bash
-chmod +x build_linux.sh
-./build_linux.sh
-```
-
----
-
-## Konfigurasi
-
-Saat pertama kali dijalankan, file `config.json` dibuat otomatis di folder yang sama dengan EXE.
+`config.json` is auto-created on first run:
 
 ```json
 {
   "ip": "10.10.11.55",
   "port": "8088",
+  "lang": "en",
   "jam_masuk": "08:00",
   "jam_keluar": "16:00",
   "toleransi": 15,
   "auto_backup": true,
-  "user_map": {
-    "1": "NICHOLAS",
-    "2": "SERLI"
-  }
+  "user_map": { "1": "NICHOLAS" }
 }
 ```
 
-Semua setting bisa diubah via menu **⚙ Pengaturan** di dalam app.
+Language can be switched (English / Bahasa Indonesia) from the header dropdown without restarting.
 
 ---
 
-## File yang dibuat app
-
-| File | Keterangan |
-|------|-----------|
-| `config.json` | Pengaturan IP, jam kerja, nama karyawan |
-| `absensi.db` | Database SQLite — histori semua data absensi |
-| `backup_raw_*.csv` | Backup otomatis setiap tarik data |
-| `Absensi_CVRAJ_*.xlsx` | Report Excel hasil generate |
-
----
-
-## Kompatibilitas Mesin
-
-Diuji pada:
-- ✅ ZKTeco eFace10 (firmware Ver 6.60)
-
-Kemungkinan kompatibel dengan mesin ZKTeco lain yang support protokol TCP port 4370/8088 via library `pyzk`.
-
----
-
-## Rilis Baru (untuk maintainer)
+## Build from Source
 
 ```bash
-# Update APP_VERSION di zkteco_app.py dan pyproject.toml
-# lalu:
-git add .
-git commit -m "release: v4.2.0"
-git tag v4.2.0
-git push origin main --tags
+# Windows
+build_windows.bat
+
+# Linux / macOS
+chmod +x build_linux.sh && ./build_linux.sh
 ```
 
-GitHub Actions akan otomatis build EXE untuk Windows, Linux, macOS dan upload ke Releases.
+## Release a New Version
+
+```bash
+git commit -am "release: v4.2.0"
+git tag v4.2.0
+git push origin main --tags
+# GitHub Actions auto-builds for all platforms
+```
 
 ---
 
-## Lisensi
+## Dependencies
 
-MIT License — bebas dipakai, dimodifikasi, dan didistribusikan.
-Lihat [LICENSE](LICENSE) untuk detail.
+| Package | Purpose |
+|---------|---------|
+| `pyzk` | ZKTeco device protocol |
+| `openpyxl` | Excel file generation |
+| `tkinter` | GUI (bundled with Python) |
+| `sqlite3` | Local database (bundled with Python) |
+
+No pandas, no numpy — binary stays small (~13 MB on Windows).
 
 ---
 
-## Kontribusi
+## License
 
-Pull request welcome! Untuk perubahan besar, buka issue dulu.
+MIT — free to use, modify, and distribute. See [LICENSE](LICENSE).
+
+---
+
+*Built for CV Rejeki Amerta Jaya, Wangon, Banyumas.*

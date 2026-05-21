@@ -17,6 +17,12 @@ try:
 except ImportError:
     _UPDATER_OK = False
 
+# ── i18n
+try:
+    from i18n import T, LANG
+except ImportError:
+    def T(key, lang='en', **kw): return key
+
 # ── Cross-platform file/folder opener ────────────────────────────────────────
 import sys as _sys, subprocess as _sp
 
@@ -646,12 +652,28 @@ class App(tk.Tk):
 
         # Header
         hdr=tk.Frame(self,bg='#1A56DB'); hdr.grid(row=0,column=0,sticky='ew')
+        # Set window icon
+        _base = os.path.dirname(os.path.abspath(__file__))
+        try:
+            if _sys.platform=='win32' and os.path.exists(os.path.join(_base,'app_icon.ico')):
+                self.iconbitmap(os.path.join(_base,'app_icon.ico'))
+            elif os.path.exists(os.path.join(_base,'app_icon.png')):
+                _img=tk.PhotoImage(file=os.path.join(_base,'app_icon.png'))
+                self.iconphoto(True,_img)
+        except Exception: pass
         tk.Label(hdr,text=f"  ZKTeco eFace10 Utility  ·  CV RAJ",
                  font=('Segoe UI',12,'bold'),bg='#1A56DB',fg='white',pady=9).pack(side='left')
-        ttk.Button(hdr,text='⚙ Pengaturan',command=self._open_settings).pack(side='right',padx=8,pady=6)
+        ttk.Button(hdr,text='⚙ Settings',command=self._open_settings).pack(side='right',padx=8,pady=6)
         ttk.Button(hdr,text='⬆ Update',command=self._check_update).pack(side='right',padx=4,pady=6)
         self.ver_lbl=tk.Label(hdr,text=f"v{APP_VERSION}  ",font=('Segoe UI',8),bg='#1A56DB',fg='#93C5FD')
         self.ver_lbl.pack(side='right')
+        # Language picker
+        lf=tk.Frame(hdr,bg='#1A56DB'); lf.pack(side='right',padx=4)
+        tk.Label(lf,text='🌐',bg='#1A56DB',fg='white',font=('Segoe UI',9)).pack(side='left')
+        self.lang_var=tk.StringVar(value=self.cfg.get('lang','en'))
+        lc=ttk.Combobox(lf,textvariable=self.lang_var,values=['en','id'],width=4,state='readonly')
+        lc.pack(side='left',pady=8,padx=(0,4))
+        lc.bind('<<ComboboxSelected>>',self._on_lang_change)
 
         # Koneksi
         fc=ttk.LabelFrame(self,text='Koneksi Device',padding=8)
@@ -872,6 +894,15 @@ class App(tk.Tk):
             self.after(0, lambda: messagebox.showerror("Error", f"Gagal download:\n{msg}"))
 
         download_and_replace(url, on_progress=on_progress, on_done=on_done, on_error=on_error)
+
+    def _on_lang_change(self, _=None):
+        lang = self.lang_var.get()
+        self.cfg['lang'] = lang
+        save_config(self.cfg)
+        msg = ("Language set to English. Restart app to apply."
+               if lang=='en' else
+               "Bahasa diubah ke Indonesia. Restart aplikasi untuk menerapkan.")
+        messagebox.showinfo("Language", msg)
 
     # Aksi
     def _do_test(self):
