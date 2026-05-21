@@ -1,0 +1,196 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'   # trigger saat push tag seperti v4.1.0
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Build Windows EXE
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install pyzk openpyxl pyinstaller
+
+      - name: Build EXE
+        run: |
+          pyinstaller --onefile --windowed `
+            --name "ZKTeco_Utility" `
+            --collect-all openpyxl `
+            --collect-all zk `
+            --hidden-import openpyxl `
+            --hidden-import openpyxl.styles `
+            --hidden-import openpyxl.styles.fills `
+            --hidden-import openpyxl.styles.fonts `
+            --hidden-import openpyxl.styles.borders `
+            --hidden-import openpyxl.styles.alignment `
+            --hidden-import openpyxl.utils `
+            --hidden-import openpyxl.worksheet `
+            --hidden-import openpyxl.formatting `
+            --hidden-import zk `
+            --hidden-import zk.base `
+            --hidden-import zk.exception `
+            --hidden-import zk.user `
+            --hidden-import zk.attendance `
+            --exclude-module pandas `
+            --exclude-module numpy `
+            --exclude-module scipy `
+            --exclude-module matplotlib `
+            --exclude-module PIL `
+            --exclude-module sklearn `
+            --exclude-module IPython `
+            --exclude-module pytest `
+            --exclude-module unittest `
+            --exclude-module turtle `
+            zkteco_app.py
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZKTeco_Utility_Windows
+          path: dist/ZKTeco_Utility.exe
+
+  build-linux:
+    name: Build Linux Binary
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-tk
+
+      - name: Install Python deps
+        run: |
+          pip install pyzk openpyxl pyinstaller
+
+      - name: Build binary
+        run: |
+          pyinstaller --onefile --windowed \
+            --name "ZKTeco_Utility_Linux" \
+            --collect-all openpyxl \
+            --collect-all zk \
+            --hidden-import openpyxl \
+            --hidden-import openpyxl.styles \
+            --hidden-import openpyxl.utils \
+            --hidden-import openpyxl.worksheet \
+            --hidden-import openpyxl.formatting \
+            --hidden-import zk \
+            --exclude-module pandas \
+            --exclude-module numpy \
+            --exclude-module matplotlib \
+            --exclude-module PIL \
+            --exclude-module sklearn \
+            --exclude-module pytest \
+            --exclude-module unittest \
+            zkteco_app.py
+
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZKTeco_Utility_Linux
+          path: dist/ZKTeco_Utility_Linux
+
+  build-macos:
+    name: Build macOS Binary
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: |
+          pip install pyzk openpyxl pyinstaller
+
+      - name: Build binary
+        run: |
+          pyinstaller --onefile --windowed \
+            --name "ZKTeco_Utility_macOS" \
+            --collect-all openpyxl \
+            --collect-all zk \
+            --hidden-import openpyxl \
+            --hidden-import openpyxl.styles \
+            --hidden-import openpyxl.utils \
+            --hidden-import openpyxl.worksheet \
+            --hidden-import openpyxl.formatting \
+            --hidden-import zk \
+            --exclude-module pandas \
+            --exclude-module numpy \
+            --exclude-module matplotlib \
+            --exclude-module PIL \
+            --exclude-module sklearn \
+            --exclude-module pytest \
+            --exclude-module unittest \
+            zkteco_app.py
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZKTeco_Utility_macOS
+          path: dist/ZKTeco_Utility_macOS
+
+  release:
+    name: Create GitHub Release
+    needs: [build-windows, build-linux, build-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "ZKTeco Utility ${{ github.ref_name }}"
+          body: |
+            ## ZKTeco eFace10 Utility ${{ github.ref_name }}
+
+            ### Download
+            | Platform | File |
+            |----------|------|
+            | Windows  | `ZKTeco_Utility.exe` |
+            | Linux    | `ZKTeco_Utility_Linux` |
+            | macOS    | `ZKTeco_Utility_macOS` |
+
+            ### Cara Install
+            **Windows:** Download EXE, taruh di folder tersendiri, jalankan.
+            **Linux:** `chmod +x ZKTeco_Utility_Linux && ./ZKTeco_Utility_Linux`
+            **macOS:** `chmod +x ZKTeco_Utility_macOS && ./ZKTeco_Utility_macOS`
+
+            ### Atau via Python (semua OS)
+            ```bash
+            pip install pyzk openpyxl
+            python zkteco_app.py
+            ```
+          files: |
+            artifacts/ZKTeco_Utility_Windows/ZKTeco_Utility.exe
+            artifacts/ZKTeco_Utility_Linux/ZKTeco_Utility_Linux
+            artifacts/ZKTeco_Utility_macOS/ZKTeco_Utility_macOS
+          draft: false
+          prerelease: false

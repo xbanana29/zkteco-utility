@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "zkteco-utility"
+version = "4.1.0"
+description = "ZKTeco eFace10 Attendance Utility — set time, pull data, generate Excel report"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "Nicholas", email = "admin@rejekiamerta.com" }
+]
+keywords = ["zkteco", "attendance", "eface10", "absensi", "excel"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Office/Business",
+]
+requires-python = ">=3.9"
+dependencies = [
+    "pyzk>=0.9",
+    "openpyxl>=3.1",
+]
+
+[project.scripts]
+zkteco-utility = "zkteco_app:main"
+
+[project.urls]
+Homepage   = "https://github.com/nikokevin29/zkteco-utility"
+Repository = "https://github.com/nikokevin29/zkteco-utility"
+Issues     = "https://github.com/nikokevin29/zkteco-utility/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]

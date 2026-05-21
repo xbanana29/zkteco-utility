@@ -1,0 +1,24 @@
+# PyInstaller
+dist/
+build/
+*.spec
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.eggs/
+*.egg-info/
+.venv/
+venv/
+
+# App data (jangan commit data lokal)
+config.json
+absensi.db
+backup_raw_*.csv
+Absensi_CVRAJ_*.xlsx
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
