@@ -696,6 +696,16 @@ class App(tk.Tk):
         self._build_ui()
         self._update_status()
         self._refresh_history()
+        # Cleanup leftover _old.exe from previous update
+        try:
+            from updater import cleanup_old_exe
+            cleanup_old_exe()
+        except ImportError: pass
+        # Cleanup leftover _old.exe from previous update
+        try:
+            from updater import cleanup_old_exe
+            cleanup_old_exe()
+        except ImportError: pass
 
     def _build_ui(self):
         # ── Header ────────────────────────────────────────────────────────────
@@ -1173,7 +1183,7 @@ class App(tk.Tk):
         if messagebox.askyesno('Delete',f'Delete report snapshot #{snap_id}?'):
             db_delete_excel_snapshot(snap_id)
             self._refresh_history()
-            self._log(f'✓ Snapshot #{snap_id} deleted')
+            self._log(f'Snapshot #{snap_id} deleted')
 
     # ── Device actions ────────────────────────────────────────────────────────
     def _do_test(self):
@@ -1276,47 +1286,95 @@ class App(tk.Tk):
 
     def _check_update(self):
         try:
-            from updater import get_latest_release, is_newer, download_and_replace
+            from updater import get_latest_release, is_newer
         except ImportError:
             messagebox.showinfo("Update","Updater module not found."); return
         self._log("Checking for updates on GitHub...")
         def _run():
             info=get_latest_release()
-            if not info:
-                self.after(0,lambda:self._log("⚠ Cannot check for updates (no internet or no releases yet)."))
+            if info is None:
+                self.after(0,lambda:self._log("Cannot reach GitHub. Check internet."))
                 return
-            latest=info['version']; dl_url=info['download_url']; body=info['body'] or ''
-            if not is_newer(latest,APP_VERSION):
-                self.after(0,lambda:self._log(f'✓ Already up to date (v{APP_VERSION})'))
-                self.after(0,lambda:messagebox.showinfo("Update",f"Already up to date!\nCurrent: v{APP_VERSION}"))
+            latest=info["version"]; dl_url=info["download_url"]; body=info.get("body","") or ""
+            if not is_newer(latest, APP_VERSION):
+                self.after(0,lambda:self._log(f"Already up to date (v{APP_VERSION})"))
+                self.after(0,lambda:messagebox.showinfo(
+                    "Up to Date", f"You have the latest version.\nCurrent: v{APP_VERSION}"))
                 return
-            msg=f"New version available: {latest}\n\nChangelog:\n{body[:400]}\n\nDownload & update now?"
-            do_it=[False]
-            def _ask(): do_it[0]=messagebox.askyesno("Update Available",msg)
-            self.after(0,_ask)
-            self.after(800,lambda:self._do_download(dl_url,latest) if do_it[0] else None)
-        threading.Thread(target=_run,daemon=True).start()
+            self.after(0,lambda:self._prompt_update(latest, dl_url, body))
+        threading.Thread(target=_run, daemon=True).start()
 
-    def _do_download(self,url,version):
-        from updater import download_and_replace
-        self._log(f"Downloading v{version} ...")
-        dlg=tk.Toplevel(self); dlg.title("Downloading"); dlg.resizable(False,False); dlg.grab_set()
-        tk.Label(dlg,text=f"Downloading ZKTeco Utility {version}",font=('Segoe UI',10)).pack(padx=20,pady=(14,4))
-        pbar=ttk.Progressbar(dlg,length=320,mode='determinate'); pbar.pack(padx=20,pady=6)
-        pct_lbl=tk.Label(dlg,text="0%",font=('Segoe UI',9)); pct_lbl.pack(pady=(0,14))
+    def _prompt_update(self, version, dl_url, body):
+        changelog = body[:500] if body else "(no changelog)"
+        msg = (f"New version available: {version}\n"
+               f"Current: v{APP_VERSION}\n\n"
+               f"Changelog:\n{changelog}\n\n"
+               f"Download and install now?\n"
+               f"App will restart automatically.")
+        if messagebox.askyesno("Update Available", msg):
+            self._do_download(dl_url, version)
+
+    def _do_download(self, url, version):
+        try:
+            from updater import download_and_replace
+        except ImportError:
+            messagebox.showerror("Error","Updater module not found."); return
+        self._log(f"Starting download of v{version} ...")
+        dlg=tk.Toplevel(self)
+        dlg.title(f"Updating to {version}")
+        dlg.resizable(False,False)
+        dlg.grab_set()
+        dlg.protocol("WM_DELETE_WINDOW",lambda:None)
+        tk.Label(dlg,text="ZKTeco eFace10 Utility",
+                 font=("Segoe UI",11,"bold")).pack(padx=24,pady=(16,4))
+        tk.Label(dlg,text=f"Updating to {version}",
+                 font=("Segoe UI",9),fg="#555").pack(padx=24)
+        tk.Label(dlg,text="Do not close this window.",
+                 font=("Segoe UI",8),fg="#888").pack(padx=24,pady=(0,10))
+        pbar=ttk.Progressbar(dlg,length=360,mode="determinate",maximum=100)
+        pbar.pack(padx=24,pady=(0,4))
+        pct_lbl=tk.Label(dlg,text="0%",font=("Segoe UI",9,"bold"),fg="#1A56DB")
+        pct_lbl.pack(pady=(0,2))
+        step_lbl=tk.Label(dlg,text="Connecting to GitHub...",font=("Segoe UI",8),fg="#555")
+        step_lbl.pack(pady=(0,16))
+
         def on_progress(pct):
             self.after(0,lambda:pbar.configure(value=pct))
             self.after(0,lambda:pct_lbl.configure(text=f"{pct}%"))
+
+        def on_status(msg):
+            self.after(0,lambda:step_lbl.configure(text=msg))
+            self.after(0,lambda:self._log(f"  {msg}"))
+
         def on_done():
-            self.after(0,dlg.destroy)
-            self._log(f'✓ Update {version} downloaded — restarting...')
-            self.after(0,lambda:messagebox.showinfo("Update Done",f"Updated to {version}!\nApp will restart."))
-            self.after(1500,self.destroy)
+            self.after(0,lambda:pbar.configure(value=100))
+            self.after(0,lambda:pct_lbl.configure(text="100%"))
+            self.after(0,lambda:step_lbl.configure(text="Done! Restarting in 2 seconds..."))
+            self.after(0,lambda:self._log(f"Update {version} installed successfully"))
+            self.after(2000,lambda:self._finish_update(dlg))
+
         def on_error(msg):
             self.after(0,dlg.destroy)
-            self.after(0,lambda:messagebox.showerror("Error",f"Download failed:\n{msg}"))
-        download_and_replace(url,on_progress=on_progress,on_done=on_done,on_error=on_error)
+            self.after(0,lambda:self._log(f"[ERROR] Update failed: {msg}"))
+            self.after(0,lambda:messagebox.showerror(
+                "Update Failed",
+                f"Failed to install update:\n\n{msg}\n\n"
+                f"Download manually:\ngithub.com/nikokevin29/zkteco-utility/releases"))
 
+        download_and_replace(url,
+            on_progress=on_progress,
+            on_status=on_status,
+            on_done=on_done,
+            on_error=on_error)
+
+    def _finish_update(self, dlg):
+        try: dlg.destroy()
+        except Exception: pass
+        try:
+            from updater import restart_app
+            restart_app()
+        except Exception:
+            self.destroy()
 
 if __name__=='__main__':
     app=App()
