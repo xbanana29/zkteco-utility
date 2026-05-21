@@ -735,17 +735,20 @@ class App(tk.Tk):
         # Koneksi
         fc=ttk.LabelFrame(left,text='Device Connection',padding=6)
         fc.pack(fill='x',**pad)
+        # Row 0: IP + Port + status
         ttk.Label(fc,text='IP:').grid(row=0,column=0,sticky='w')
         self.ip_var=tk.StringVar(value=self.cfg['ip'])
         ttk.Entry(fc,textvariable=self.ip_var,width=16).grid(row=0,column=1,padx=3)
         ttk.Label(fc,text='Port:').grid(row=0,column=2,sticky='w',padx=(6,0))
         self.port_var=tk.StringVar(value=self.cfg['port'])
         ttk.Entry(fc,textvariable=self.port_var,width=7).grid(row=0,column=3,padx=3)
-        ttk.Button(fc,text='🔌 Test',command=lambda:self._run(self._do_test)).grid(row=0,column=4,padx=4)
-        ttk.Button(fc,text='ℹ Info',command=lambda:self._run(self._do_info)).grid(row=0,column=5,padx=2)
-        ttk.Button(fc,text='👤 Users',command=lambda:self._run(self._do_users)).grid(row=0,column=6,padx=2)
         self.conn_lbl=tk.Label(fc,text='● Not connected',font=('Segoe UI',7),fg='#888',bg='#F1F5F9')
-        self.conn_lbl.grid(row=1,column=0,columnspan=7,sticky='w',pady=(2,0))
+        self.conn_lbl.grid(row=0,column=4,columnspan=2,sticky='w',padx=(8,0))
+        # Row 1: action buttons
+        btn_frame=tk.Frame(fc,bg='#F1F5F9'); btn_frame.grid(row=1,column=0,columnspan=6,sticky='w',pady=(4,0))
+        ttk.Button(btn_frame,text='🔌 Test Connection',command=lambda:self._run(self._do_test)).pack(side='left',padx=(0,4))
+        ttk.Button(btn_frame,text='ℹ Device Info',command=lambda:self._run(self._do_info)).pack(side='left',padx=4)
+        ttk.Button(btn_frame,text='👤 Manage Users',command=lambda:self._run(self._do_users)).pack(side='left',padx=4)
 
         # Alur kerja — step boxes
         fw=ttk.LabelFrame(left,text='Workflow',padding=8)
@@ -1000,14 +1003,49 @@ class App(tk.Tk):
 
     def _render_sheet(self, data_bytes, sheet_idx):
         headers,rows=parse_excel_for_preview(data_bytes,sheet_idx)
-        # clear
         self.report_tree.delete(*self.report_tree.get_children())
         if not headers: return
         self.report_tree['columns']=headers
+
+        # ── Auto-fit column width based on header + content ───────────────
+        # Sample up to 100 rows for width calculation
+        sample = rows[:100]
+        col_widths = {}
         for col in headers:
-            self.report_tree.heading(col,text=col)
-            w=max(60, min(160, len(col)*11))
-            self.report_tree.column(col,width=w,minwidth=40,anchor='center')
+            # header width: account for newlines (take longest line)
+            hdr_lines = str(col).split('\n')
+            hdr_w = max(len(ln) for ln in hdr_lines) * 8 + 16
+            col_widths[col] = hdr_w
+
+        for row in sample:
+            for col, val in zip(headers, row):
+                val_w = len(str(val)) * 8 + 12
+                col_widths[col] = max(col_widths[col], val_w)
+
+        # Special columns: Name always wider, No/day columns narrower
+        for col in headers:
+            w = col_widths[col]
+            col_lower = col.lower().replace('\n','')
+            if col_lower in ('no',): w = 42
+            elif col_lower in ('name','nama'): w = max(w, 110)
+            elif col_lower in ('date','tanggal'): w = max(w, 85)
+            elif col_lower in ('day','hari'): w = max(w, 75)
+            elif col_lower in ('check-in','jam masuk','masuk'): w = max(w, 72)
+            elif col_lower in ('check-out','jam keluar','keluar'): w = max(w, 72)
+            elif col_lower in ('status'): w = max(w, 70)
+            # cap max width for date columns (short values like "07:38")
+            if len(col) <= 6 and chr(10) in col:  # day header like "1\nMon"
+                w = min(w, 52)
+            col_widths[col] = max(40, min(200, w))
+
+        for col in headers:
+            w = col_widths[col]
+            # center short columns, left-align text columns
+            col_lower = col.lower().replace('\n','')
+            anchor = 'w' if col_lower in ('name','nama') else 'center'
+            self.report_tree.heading(col, text=col)
+            self.report_tree.column(col, width=w, minwidth=36, anchor=anchor, stretch=False)
+
         for i,row in enumerate(rows):
             tag='odd' if i%2==0 else 'even'
             self.report_tree.insert('','end',values=row,tags=(tag,))
