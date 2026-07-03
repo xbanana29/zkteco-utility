@@ -10,7 +10,7 @@ from tkinter import ttk, filedialog, messagebox, scrolledtext
 import csv, os, threading, calendar, sqlite3, json, sys
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "4.5.0"
+APP_VERSION = "4.5.1"
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 DB_FILE     = os.path.join(os.path.dirname(os.path.abspath(__file__)), "absensi.db")
 
@@ -687,13 +687,7 @@ class SettingsDialog(tk.Toplevel):
             row=len(fields)+1,column=0,columnspan=2,sticky='w',padx=10,pady=4)
         self.vars['anomaly_recover']=ar
 
-        t2=ttk.Frame(nb); nb.add(t2,text='Staff Names')
-        ttk.Label(t2,text='Format: UID=Name (one per line)',foreground='#666').pack(anchor='w',padx=10,pady=(8,2))
-        self.user_text=scrolledtext.ScrolledText(t2,width=35,height=14,font=('Consolas',9))
-        self.user_text.pack(padx=10,pady=(0,8))
-        um=self.cfg.get('user_map',{})
-        self.user_text.insert('end','\n'.join(f"{k}={v}" for k,v in sorted(um.items(),key=lambda x:int(x[0]))))
-
+        # staff names are managed via "Manage Users" (device is the source of truth)
         bf=tk.Frame(self); bf.pack(pady=(0,10))
         ttk.Button(bf,text='💾 Save',command=self._save).pack(side='left',padx=6)
         ttk.Button(bf,text='Cancel',command=self.destroy).pack(side='left',padx=6)
@@ -705,12 +699,6 @@ class SettingsDialog(tk.Toplevel):
                 elif key in ('auto_backup','anomaly_recover'): self.cfg[key]=bool(v.get())
                 else: self.cfg[key]=v.get()
             except: self.cfg[key]=v.get()
-        um={}
-        for line in self.user_text.get('1.0','end').strip().splitlines():
-            if '=' in line:
-                k,_,v2=line.partition('=')
-                if k.strip().isdigit(): um[k.strip()]=v2.strip()
-        self.cfg['user_map']=um
         save_config(self.cfg)
         self.on_save(self.cfg)
         self.destroy()
@@ -1319,7 +1307,8 @@ class App(tk.Tk):
             users=conn.get_users()
             ulist=[{'uid':int(u.user_id),'nama':u.name,'card_id':getattr(u,'card','') or ''} for u in users]
             db_upsert_users(ulist)
-            for u in ulist: self.cfg['user_map'][str(u['uid'])]=u['nama']
+            for u in ulist:
+                if u['nama']: self.cfg['user_map'][str(u['uid'])]=u['nama']  # empty device name must not clobber config
             save_config(self.cfg)
             self._log(f'✓ {len(ulist)} users found and synced to config')
             self.after(0,lambda:UserManagerDialog(self,ulist,app=self))
@@ -1333,7 +1322,8 @@ class App(tk.Tk):
             users=conn.get_users()
             ulist=[{'uid':int(u.user_id),'nama':u.name,'card_id':getattr(u,'card','') or ''} for u in users]
             db_upsert_users(ulist)
-            for u in ulist: self.cfg['user_map'][str(u['uid'])]=u['nama']
+            for u in ulist:
+                if u['nama']: self.cfg['user_map'][str(u['uid'])]=u['nama']  # empty device name must not clobber config
             save_config(self.cfg)
             self._log(done_msg)
             self.after(0,lambda:dlg._fill(ulist))

@@ -46,5 +46,5 @@ Catatan: exe di `dist\` kekunci kalau app lagi jalan — kill `ZKTeco_Utility` d
 ## Riwayat kurasi (Jul 2026)
 
 - Ditambah: user add/rename/delete di device, tombol Restart device, RTC auto-sync
-- Dihapus: `i18n.py` (dead code, `T()` tak pernah dipanggil), blok cleanup duplikat di `__init__`, step Set Time, popup restart bahasa yang menyesatkan
+- Dihapus: `i18n.py` (dead code, `T()` tak pernah dipanggil), blok cleanup duplikat di `__init__`, step Set Time, popup restart bahasa yang menyesatkan, tab Staff Names di Settings (redundan — nama dikelola via Manage Users, device = source of truth; sync di-guard agar nama kosong dari device tidak menimpa `user_map`)
 - Sengaja dibiarkan: `_DF` class (kecil, teruji, hindari pandas), `recover_and_export.py` (tool darurat offline)
