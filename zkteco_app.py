@@ -10,7 +10,7 @@ from tkinter import ttk, filedialog, messagebox, scrolledtext
 import csv, os, threading, calendar, sqlite3, json, sys
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "4.3.0"
+APP_VERSION = "4.4.0"
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 DB_FILE     = os.path.join(os.path.dirname(os.path.abspath(__file__)), "absensi.db")
 
@@ -23,12 +23,85 @@ DEFAULT_CONFIG = {
     "lang": "en",
     "jam_masuk": "08:00", "jam_keluar": "16:00",
     "toleransi": 15, "auto_backup": False,
+    "anomaly_recover": True, "anomaly_anchor": "",
     "user_map": {
         "1":"NICHOLAS","2":"SERLI","3":"TIA","4":"MISRO",
         "5":"LISA","6":"TUR","7":"SLAMET","8":"ARI",
         "9":"REFA","10":"SUKUR","11":"PUGUH"
     }
 }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ANOMALY (clock-reset) DETECTION & RECOVERY
+# The eFace10 has NO RTC battery (UPS-only power backup). On a power loss the
+# device clock resets to year 2000, so punches made during the outage get
+# stamped with bogus year-2000 dates instead of the real date. These helpers
+# detect those records and remap them back onto real calendar dates.
+# ─────────────────────────────────────────────────────────────────────────────
+ANOMALY_YEAR = 2000   # timestamp.year <= this  → clock-reset anomaly record
+
+def is_anomaly_ts(ts):
+    return ts is None or ts.year <= ANOMALY_YEAR
+
+def _sec_of_day(ts):
+    return ts.hour*3600 + ts.minute*60 + ts.second
+
+def find_gap_start(normal_recs, fallback=None):
+    """Start date of the LONGEST run of missing days (the outage). A power outage
+    long enough to matter shows up as the biggest gap in the calendar, so the
+    anomaly records are remapped starting there."""
+    dates = sorted({r['timestamp'].date() for r in normal_recs if r.get('timestamp')})
+    if not dates:
+        return fallback or date(2026, 6, 11)
+    dset = set(dates); d = dates[0]
+    best_start = None; best_len = 0
+    while d <= dates[-1]:
+        if d not in dset and (d - timedelta(days=1)) in dset:
+            s = d; n = 0
+            while d not in dset:
+                d += timedelta(days=1); n += 1
+            if n > best_len:
+                best_len = n; best_start = s
+        else:
+            d += timedelta(days=1)
+    return best_start or (dates[-1] + timedelta(days=1))
+
+def remap_anomalies(anomaly_recs, anchor_date, jam_masuk='08:00', jam_keluar='16:00'):
+    """Remap year-2000 records onto consecutive real dates starting at anchor_date
+    (one fake day → one real day). Times within each day are linearly rescaled into
+    a plausible work window [check-in − 30 min .. check-out + 60 min] so recovered
+    rows look like normal days. Who-was-present and the punch order are REAL; the
+    exact minute is approximate because the original clock was corrupted.
+    Returns new dicts with corrected 'timestamp' plus 'recovered'=True and 'orig_ts'."""
+    try:
+        hi, mi = (int(x) for x in jam_masuk.split(':'))
+        ho, mo = (int(x) for x in jam_keluar.split(':'))
+    except Exception:
+        hi, mi, ho, mo = 8, 0, 16, 0
+    win_s = hi*3600 + mi*60 - 30*60
+    win_e = ho*3600 + mo*60 + 60*60
+    from collections import defaultdict
+    byfake = defaultdict(list)
+    for r in anomaly_recs:
+        if r.get('timestamp'):
+            byfake[r['timestamp'].date()].append(r)
+    out = []; used = set()
+    for i, fday in enumerate(sorted(byfake)):
+        real = anchor_date + timedelta(days=i)
+        recs = byfake[fday]
+        secs = [_sec_of_day(r['timestamp']) for r in recs]
+        t0, t1 = min(secs), max(secs); span = (t1 - t0) or 1
+        base = datetime(real.year, real.month, real.day)
+        for r in sorted(recs, key=lambda x: x['timestamp']):
+            frac = (_sec_of_day(r['timestamp']) - t0) / span
+            nts = base + timedelta(seconds=int(win_s + frac*(win_e - win_s)))
+            while nts in used:               # keep timestamps unique (DB constraint)
+                nts += timedelta(seconds=1)
+            used.add(nts)
+            nr = dict(r); nr['timestamp'] = nts
+            nr['recovered'] = True; nr['orig_ts'] = r['timestamp']
+            out.append(nr)
+    return out
 
 # ── i18n ──────────────────────────────────────────────────────────────────────
 try:
@@ -603,7 +676,8 @@ class SettingsDialog(tk.Toplevel):
         fields=[('IP Address','ip'),('Port','port'),
                 ('Standard Check-in (HH:MM)','jam_masuk'),
                 ('Standard Check-out (HH:MM)','jam_keluar'),
-                ('Late Tolerance (minutes)','toleransi')]
+                ('Late Tolerance (minutes)','toleransi'),
+                ('Recovery anchor date (YYYY-MM-DD, blank=auto)','anomaly_anchor')]
         self.vars={}
         for i,(label,key) in enumerate(fields):
             ttk.Label(t1,text=label).grid(row=i,column=0,sticky='w',padx=10,pady=4)
@@ -614,6 +688,10 @@ class SettingsDialog(tk.Toplevel):
         ttk.Checkbutton(t1,text='Auto backup CSV after pull',variable=ab).grid(
             row=len(fields),column=0,columnspan=2,sticky='w',padx=10,pady=4)
         self.vars['auto_backup']=ab
+        ar=tk.BooleanVar(value=self.cfg.get('anomaly_recover',True))
+        ttk.Checkbutton(t1,text='Auto-recover clock-reset (year 2000) records',variable=ar).grid(
+            row=len(fields)+1,column=0,columnspan=2,sticky='w',padx=10,pady=4)
+        self.vars['anomaly_recover']=ar
 
         t2=ttk.Frame(nb); nb.add(t2,text='Staff Names')
         ttk.Label(t2,text='Format: UID=Name (one per line)',foreground='#666').pack(anchor='w',padx=10,pady=(8,2))
@@ -630,7 +708,7 @@ class SettingsDialog(tk.Toplevel):
         for key,v in self.vars.items():
             try:
                 if key=='toleransi': self.cfg[key]=int(v.get())
-                elif key=='auto_backup': self.cfg[key]=bool(v.get())
+                elif key in ('auto_backup','anomaly_recover'): self.cfg[key]=bool(v.get())
                 else: self.cfg[key]=v.get()
             except: self.cfg[key]=v.get()
         um={}
@@ -1194,6 +1272,7 @@ class App(tk.Tk):
             fw=conn.get_firmware_version()
             self._log(f'✓ Connected! Firmware: {fw}')
             self.after(0,lambda:self.conn_lbl.config(text=f'● {ip}',fg='#16a34a'))
+            self._check_clock(conn)
         finally: conn.disconnect()
 
     def _do_info(self):
@@ -1233,28 +1312,95 @@ class App(tk.Tk):
         self._log('Pulling attendance data from device ...')
         conn=self._get_conn()
         try:
+            self._check_clock(conn)
             atts=conn.get_attendance()
             if not atts: self._log('⚠ No data on device.'); return
             um={int(k):v for k,v in self.cfg.get('user_map',{}).items()}
-            self._cache=[{'uid':int(a.user_id),'nama':um.get(int(a.user_id),f'UID:{a.user_id}'),
-                          'timestamp':a.timestamp,'punch':a.punch} for a in atts]
+            recs=[{'uid':int(a.user_id),'nama':um.get(int(a.user_id),f'UID:{a.user_id}'),
+                   'timestamp':a.timestamp,'punch':a.punch} for a in atts if a.timestamp]
+            anomaly=[r for r in recs if is_anomaly_ts(r['timestamp'])]
+            normal =[r for r in recs if not is_anomaly_ts(r['timestamp'])]
+            if anomaly and self.cfg.get('anomaly_recover',True):
+                cfg_anchor=str(self.cfg.get('anomaly_anchor','') or '').strip()
+                anchor=None
+                if cfg_anchor:
+                    try: anchor=datetime.strptime(cfg_anchor,'%Y-%m-%d').date()
+                    except Exception: anchor=None
+                if anchor is None: anchor=find_gap_start(normal)
+                remapped=remap_anomalies(anomaly,anchor,
+                                         self.cfg.get('jam_masuk','08:00'),
+                                         self.cfg.get('jam_keluar','16:00'))
+                n_days=len(set(r['timestamp'].date() for r in anomaly))
+                last=anchor+timedelta(days=max(0,n_days-1))
+                self._log(f'⚠ {len(anomaly)} ANOMALY records detected (clock reset to year {ANOMALY_YEAR}).')
+                self._log(f'  → recovered onto {anchor.strftime("%d %b")} .. {last.strftime("%d %b %Y")} '
+                          f'({len(remapped)} punches)')
+                self._backup_anomaly_csv(remapped)
+                self.after(0,lambda:messagebox.showwarning('Anomaly Recovered',
+                    f'{len(anomaly)} record dengan jam ter-reset (tahun {ANOMALY_YEAR}) ditemukan '
+                    f'dan DIPULIHKAN.\n\n'
+                    f'Dipetakan ke tanggal:\n{anchor.strftime("%d %b %Y")}  s/d  {last.strftime("%d %b %Y")}\n\n'
+                    f'Penyebab: mesin tanpa baterai RTC. Pastikan UPS tidak habis; '
+                    f'jalankan "Set Time" setelah tiap mati listrik.\n\n'
+                    f'Backup mentah (jam asli vs hasil remap) disimpan di folder aplikasi.'))
+                self._cache=normal+remapped
+            else:
+                if anomaly:
+                    self._log(f'⚠ {len(anomaly)} anomaly records ignored (recovery disabled in Settings).')
+                self._cache=normal
             new=db_insert_attendance(self._cache)
-            sid=db_add_pull_session(len(atts),new,self.ip_var.get().strip())
+            sid=db_add_pull_session(len(self._cache),new,self.ip_var.get().strip())
             self._log(f'✓ {len(atts)} records pulled  |  {new} new saved to database')
             self._log(f'  Pull session #{sid} recorded')
             if self.cfg.get('auto_backup',False):
                 ts=datetime.now().strftime('%Y%m%d_%H%M%S')
                 path=os.path.join(os.path.dirname(os.path.abspath(__file__)),f'backup_raw_{ts}.csv')
                 with open(path,'w',newline='',encoding='utf-8') as f:
-                    w=csv.writer(f); w.writerow(['UserID','Name','Timestamp','Status'])
-                    for a in atts:
-                        uid=int(a.user_id)
-                        w.writerow([uid,um.get(uid,f'UID:{uid}'),
-                                    a.timestamp.strftime('%Y-%m-%d %H:%M:%S') if a.timestamp else '',
-                                    'Check-In' if a.punch==0 else 'Check-Out'])
+                    w=csv.writer(f); w.writerow(['UserID','Name','Timestamp','Status','Recovered'])
+                    for r in self._cache:
+                        w.writerow([r['uid'],r['nama'],
+                                    r['timestamp'].strftime('%Y-%m-%d %H:%M:%S') if r['timestamp'] else '',
+                                    'Check-In' if r['punch']==0 else 'Check-Out',
+                                    'Y' if r.get('recovered') else ''])
                 self._log(f'  Backup CSV → {path}')
             self.after(0,self._refresh_history)
         finally: conn.disconnect()
+
+    def _check_clock(self, conn):
+        """Warn loudly if the device RTC has drifted from the PC clock."""
+        try:
+            dev=conn.get_time(); pc=datetime.now()
+            skew=abs((dev-pc).total_seconds())
+            if skew>120:
+                mins=int(skew//60)
+                self._log(f'⚠ CLOCK SKEW: device={dev} — off by ~{mins} min from PC. Run "Set Time"!')
+                self.after(0,lambda:self.conn_lbl.config(text='● clock off!',fg='#dc2626'))
+                self.after(0,lambda:messagebox.showwarning('Clock Skew / Jam Meleset',
+                    f'Jam mesin meleset ~{mins} menit dari PC.\n\n'
+                    f'Device : {dev}\nPC     : {pc.strftime("%Y-%m-%d %H:%M:%S")}\n\n'
+                    f'Klik "Set Time" untuk sinkron sekarang, jika tidak absen berikutnya '
+                    f'akan tersimpan dengan tanggal salah.'))
+            else:
+                self._log(f'✓ Device clock OK ({dev})')
+            return skew
+        except Exception as e:
+            self._log(f'  (clock check skipped: {e})'); return None
+
+    def _backup_anomaly_csv(self, remapped):
+        """Save original (corrupted) vs remapped timestamps for audit."""
+        try:
+            ts=datetime.now().strftime('%Y%m%d_%H%M%S')
+            path=os.path.join(os.path.dirname(os.path.abspath(__file__)),f'anomaly_recovered_{ts}.csv')
+            with open(path,'w',newline='',encoding='utf-8') as f:
+                w=csv.writer(f); w.writerow(['UID','Name','OriginalTimestamp','RemappedTimestamp','Status'])
+                for r in sorted(remapped,key=lambda x:x['timestamp']):
+                    w.writerow([r['uid'],r['nama'],
+                                r['orig_ts'].strftime('%Y-%m-%d %H:%M:%S'),
+                                r['timestamp'].strftime('%Y-%m-%d %H:%M:%S'),
+                                'Check-In' if r['punch']==0 else 'Check-Out'])
+            self._log(f'  Raw anomaly backup → {path}')
+        except Exception as e:
+            self._log(f'  (anomaly backup failed: {e})')
 
     def _do_clear(self):
         self._log('Clearing log from device memory ...')

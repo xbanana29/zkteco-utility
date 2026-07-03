@@ -16,6 +16,8 @@ venv/
 config.json
 absensi.db
 backup_raw_*.csv
+anomaly_recovered_*.csv
+Recovered_audit_*.csv
 Absensi_CVRAJ_*.xlsx
 
 # OS
