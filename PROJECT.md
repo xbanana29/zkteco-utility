@@ -30,6 +30,9 @@ Tarik log absensi via LAN → simpan SQLite → generate laporan Excel berformat
 ## Perilaku kunci
 
 - **RTC auto-sync**: `_check_clock` dipanggil saat Test Connection & Pull — skew >2 menit → `conn.set_time()` otomatis. Tidak ada tombol Set Time manual lagi (dihapus, by design)
+- **Live Monitor** (`_toggle_live`/`_live_loop`, v4.6.0): koneksi sendiri di luar `_run` (tombol lain tetap aktif), `conn.live_capture()` loop dengan auto-reconnect 30s. Tiap punch: log + toast `_toast` (Toplevel pojok kanan bawah, 4s, tanpa dependency) + insert DB langsung (dedup via timestamp UNIQUE). Stop via flag `_live_want` + `end_live_capture`
+- **Capacity warning** (`_check_capacity`, v4.6.0): `conn.read_sizes()` saat Test/Pull — log ≥80% penuh → popup suruh pull + clear. Device Info tampilkan `users/cap` & `records/cap`
+- **Autostart** (`_apply_autostart`, v4.6.0): toggle di Settings → registry `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` via winreg, exe dijalankan dengan flag `--minimized` (window iconify). Hanya jalan dari exe (bukan .py). Toggle kedua `live_autostart`: live monitor nyala otomatis 1.5s setelah launch
 - **Pull**: deteksi record tahun-2000 → auto-remap (anchor dari config atau auto gap-finder) → warning popup + backup CSV audit → insert DB (dedup via timestamp UNIQUE)
 - Report disimpan sebagai snapshot xlsx blob di DB, bisa di-load/export ulang dari tab History
 - `⚡ All at Once` = pull + report sekaligus
@@ -45,6 +48,7 @@ Catatan: exe di `dist\` kekunci kalau app lagi jalan — kill `ZKTeco_Utility` d
 
 ## Riwayat kurasi (Jul 2026)
 
+- v4.6.0: Live Monitor + toast notif, capacity warning, autostart Windows, tombol koneksi ditata grid 3×2 uniform (Live sempat ketutup panel 420px)
 - Ditambah: user add/rename/delete di device, tombol Restart device, RTC auto-sync
 - Dihapus: `i18n.py` (dead code, `T()` tak pernah dipanggil), blok cleanup duplikat di `__init__`, step Set Time, popup restart bahasa yang menyesatkan, tab Staff Names di Settings (redundan — nama dikelola via Manage Users, device = source of truth; sync di-guard agar nama kosong dari device tidak menimpa `user_map`)
 - Sengaja dibiarkan: `_DF` class (kecil, teruji, hindari pandas), `recover_and_export.py` (tool darurat offline)
