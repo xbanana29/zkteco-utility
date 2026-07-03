@@ -7,10 +7,10 @@ Semua data disimpan di SQLite, tidak ada file temp eksternal
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
-import csv, os, threading, calendar, sqlite3, json, sys
+import csv, os, threading, calendar, sqlite3, json, sys, time
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "4.5.1"
+APP_VERSION = "4.6.0"
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 DB_FILE     = os.path.join(os.path.dirname(os.path.abspath(__file__)), "absensi.db")
 
@@ -23,6 +23,7 @@ DEFAULT_CONFIG = {
     "lang": "en",
     "jam_masuk": "08:00", "jam_keluar": "16:00",
     "toleransi": 15, "auto_backup": False,
+    "autostart": False, "live_autostart": False,
     "anomaly_recover": True, "anomaly_anchor": "",
     "user_map": {
         "1":"NICHOLAS","2":"SERLI","3":"TIA","4":"MISRO",
@@ -686,6 +687,14 @@ class SettingsDialog(tk.Toplevel):
         ttk.Checkbutton(t1,text='Auto-recover clock-reset (year 2000) records',variable=ar).grid(
             row=len(fields)+1,column=0,columnspan=2,sticky='w',padx=10,pady=4)
         self.vars['anomaly_recover']=ar
+        au=tk.BooleanVar(value=self.cfg.get('autostart',False))
+        ttk.Checkbutton(t1,text='Start with Windows (minimized to taskbar)',variable=au).grid(
+            row=len(fields)+2,column=0,columnspan=2,sticky='w',padx=10,pady=4)
+        self.vars['autostart']=au
+        la=tk.BooleanVar(value=self.cfg.get('live_autostart',False))
+        ttk.Checkbutton(t1,text='Auto-start Live Monitor + punch notifications',variable=la).grid(
+            row=len(fields)+3,column=0,columnspan=2,sticky='w',padx=10,pady=4)
+        self.vars['live_autostart']=la
 
         # staff names are managed via "Manage Users" (device is the source of truth)
         bf=tk.Frame(self); bf.pack(pady=(0,10))
@@ -696,7 +705,7 @@ class SettingsDialog(tk.Toplevel):
         for key,v in self.vars.items():
             try:
                 if key=='toleransi': self.cfg[key]=int(v.get())
-                elif key in ('auto_backup','anomaly_recover'): self.cfg[key]=bool(v.get())
+                elif key in ('auto_backup','anomaly_recover','autostart','live_autostart'): self.cfg[key]=bool(v.get())
                 else: self.cfg[key]=v.get()
             except: self.cfg[key]=v.get()
         save_config(self.cfg)
@@ -802,6 +811,9 @@ class App(tk.Tk):
             from updater import cleanup_old_exe
             cleanup_old_exe()
         except ImportError: pass
+        # Autostart mode: launched by Windows at login → minimized, live monitor on
+        if '--minimized' in sys.argv: self.iconify()
+        if self.cfg.get('live_autostart',False): self.after(1500,self._toggle_live)
 
     def _build_ui(self):
         # ── Header ────────────────────────────────────────────────────────────
@@ -850,12 +862,19 @@ class App(tk.Tk):
         ttk.Entry(fc,textvariable=self.port_var,width=7).grid(row=0,column=3,padx=3)
         self.conn_lbl=tk.Label(fc,text='● Not connected',font=('Segoe UI',7),fg='#888',bg='#F1F5F9')
         self.conn_lbl.grid(row=0,column=4,columnspan=2,sticky='w',padx=(8,0))
-        # Row 1: action buttons
-        btn_frame=tk.Frame(fc,bg='#F1F5F9'); btn_frame.grid(row=1,column=0,columnspan=6,sticky='w',pady=(4,0))
-        ttk.Button(btn_frame,text='🔌 Test Connection',command=lambda:self._run(self._do_test)).pack(side='left',padx=(0,4))
-        ttk.Button(btn_frame,text='ℹ Device Info',command=lambda:self._run(self._do_info)).pack(side='left',padx=4)
-        ttk.Button(btn_frame,text='👤 Manage Users',command=lambda:self._run(self._do_users)).pack(side='left',padx=4)
-        ttk.Button(btn_frame,text='♻ Restart',command=self._confirm_restart).pack(side='left',padx=4)
+        # Rows 1-2: action buttons — 3-col grid, uniform widths, grouped by function
+        # (row 1 = read/monitor, row 2 = manage) so nothing overflows the 420px panel
+        btn_frame=tk.Frame(fc,bg='#F1F5F9'); btn_frame.grid(row=1,column=0,columnspan=6,sticky='ew',pady=(6,0))
+        for i in range(3): btn_frame.columnconfigure(i,weight=1,uniform='conn')
+        def cbtn(r,c,text,cmd):
+            b=ttk.Button(btn_frame,text=text,command=cmd)
+            b.grid(row=r,column=c,sticky='ew',padx=2,pady=2)
+            return b
+        cbtn(0,0,'🔌 Test Connection',lambda:self._run(self._do_test))
+        cbtn(0,1,'ℹ Device Info',lambda:self._run(self._do_info))
+        self.btn_live=cbtn(0,2,'📡 Live Monitor',self._toggle_live)
+        cbtn(1,0,'👤 Manage Users',lambda:self._run(self._do_users))
+        cbtn(1,1,'♻ Restart Device',self._confirm_restart)
 
         # Alur kerja — step boxes
         fw=ttk.LabelFrame(left,text='Workflow',padding=8)
@@ -1070,8 +1089,39 @@ class App(tk.Tk):
             self.cfg=new_cfg
             self.ip_var.set(new_cfg['ip'])
             self.port_var.set(new_cfg['port'])
+            self._apply_autostart(new_cfg.get('autostart',False))
             self._log('✓ Settings saved')
         SettingsDialog(self,self.cfg,on_save)
+
+    def _apply_autostart(self, enable):
+        """Register/unregister the exe in HKCU Run so it launches at Windows login."""
+        if sys.platform!='win32': return
+        import winreg
+        try:
+            key=winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                r'Software\Microsoft\Windows\CurrentVersion\Run',0,winreg.KEY_SET_VALUE)
+            if enable:
+                if not getattr(sys,'frozen',False):
+                    self._log('⚠ Autostart only works from the built .exe, not from .py'); return
+                winreg.SetValueEx(key,'ZKTeco_Utility',0,winreg.REG_SZ,f'"{sys.executable}" --minimized')
+                self._log('✓ Autostart ON — app will start minimized at Windows login')
+            else:
+                try: winreg.DeleteValue(key,'ZKTeco_Utility')
+                except FileNotFoundError: pass
+                self._log('✓ Autostart OFF')
+            key.Close()
+        except Exception as e:
+            self._log(f'[ERROR] Autostart: {e}')
+
+    def _toast(self, msg):
+        """Notification popup bottom-right; shows even while main window is minimized."""
+        t=tk.Toplevel(self); t.overrideredirect(True); t.attributes('-topmost',True)
+        tk.Label(t,text=msg,bg='#1A56DB',fg='white',font=('Segoe UI',10,'bold'),
+                 padx=18,pady=12).pack()
+        t.update_idletasks()
+        t.geometry(f'+{t.winfo_screenwidth()-t.winfo_width()-16}'
+                   f'+{t.winfo_screenheight()-t.winfo_height()-70}')
+        t.after(4000,t.destroy)
 
     def _on_lang_change(self,_=None):
         lang=self.lang_var.get()
@@ -1286,15 +1336,18 @@ class App(tk.Tk):
             self._log(f'✓ Connected! Firmware: {fw}')
             self.after(0,lambda:self.conn_lbl.config(text=f'● {ip}',fg='#16a34a'))
             self._check_clock(conn)
+            self._check_capacity(conn)
         finally: conn.disconnect()
 
     def _do_info(self):
         self._log('Fetching device info ...')
         conn=self._get_conn()
         try:
+            conn.read_sizes()
             info={'Serial Number':conn.get_serialnumber(),'Firmware':conn.get_firmware_version(),
                   'Device Time':str(conn.get_time()),
-                  'Users':len(conn.get_users()),'Logs':len(conn.get_attendance()),
+                  'Users':f'{conn.users} / {conn.users_cap}',
+                  'Logs':f'{conn.records:,} / {conn.rec_cap:,}',
                   'Local DB':f'{db_count():,} records'}
             self._log('✓ Device info received')
             self.after(0,lambda:DeviceInfoDialog(self,info))
@@ -1348,6 +1401,66 @@ class App(tk.Tk):
         if messagebox.askyesno('Restart','Restart the device now?\nIt will be offline for ~1 minute.'):
             self._run(self._do_restart)
 
+    # ── Live monitor ──────────────────────────────────────────────────────────
+    # Holds its own connection open; not routed through _run so the other
+    # buttons stay usable while monitoring.
+    def _toggle_live(self):
+        if getattr(self,'_live_want',False):
+            self._live_want=False
+            c=getattr(self,'_live_conn',None)
+            if c: c.end_live_capture=True   # loop in _live_loop exits
+            return
+        self._live_want=True
+        threading.Thread(target=self._live_loop,daemon=True).start()
+
+    def _live_loop(self):
+        self.after(0,lambda:self.btn_live.config(text='⏹ Stop Live'))
+        self._log('📡 Live monitor ON — punches appear here as they happen')
+        while self._live_want:   # reconnect loop — survives device/network drops
+            conn=None
+            try:
+                conn=self._get_conn()
+                self._live_conn=conn
+                um={int(k):v for k,v in self.cfg.get('user_map',{}).items()}
+                for att in conn.live_capture():
+                    if att is None:   # idle timeout tick
+                        if not self._live_want: break
+                        continue
+                    name=um.get(int(att.user_id),f'UID:{att.user_id}')
+                    hhmm=att.timestamp.strftime('%H:%M') if att.timestamp else '?'
+                    self._log(f'👆 {name} — {att.timestamp}')
+                    self.after(0,lambda n=name,h=hhmm:self._toast(f'👆 {n} absen — {h}'))
+                    # save immediately; UNIQUE timestamp makes later pulls dedup for free
+                    db_insert_attendance([{'uid':int(att.user_id),'nama':name,
+                                           'timestamp':att.timestamp,'punch':att.punch}])
+                    self.after(0,self._update_status)
+            except Exception as e:
+                if self._live_want: self._log(f'⚠ Live monitor: {e} — reconnecting in 30s')
+            finally:
+                self._live_conn=None
+                try:
+                    if conn: conn.disconnect()
+                except Exception: pass
+            for _ in range(30):   # wait, but stay responsive to Stop
+                if not self._live_want: break
+                time.sleep(1)
+        self.after(0,lambda:self.btn_live.config(text='📡 Live Monitor'))
+        self._log('📡 Live monitor OFF')
+
+    def _check_capacity(self, conn):
+        """Warn when the device log memory is nearly full."""
+        try:
+            conn.read_sizes()
+            if conn.rec_cap and conn.records/conn.rec_cap>=0.8:
+                pct=round(conn.records/conn.rec_cap*100)
+                self._log(f'⚠ Device log {pct}% full ({conn.records:,}/{conn.rec_cap:,})')
+                self.after(0,lambda:messagebox.showwarning('Log Hampir Penuh',
+                    f'Memori log mesin {pct}% penuh ({conn.records:,} dari {conn.rec_cap:,}).\n\n'
+                    f'Pull Data dulu, lalu jalankan "Clear Device Log" — kalau penuh, '
+                    f'absensi baru tidak akan tersimpan.'))
+        except Exception as e:
+            self._log(f'  (capacity check skipped: {e})')
+
     def _do_restart(self):
         self._log('Restarting device ...')
         conn=self._get_conn()
@@ -1359,6 +1472,7 @@ class App(tk.Tk):
         conn=self._get_conn()
         try:
             self._check_clock(conn)
+            self._check_capacity(conn)
             atts=conn.get_attendance()
             if not atts: self._log('⚠ No data on device.'); return
             um={int(k):v for k,v in self.cfg.get('user_map',{}).items()}
