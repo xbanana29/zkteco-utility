@@ -10,7 +10,7 @@ from tkinter import ttk, filedialog, messagebox, scrolledtext
 import csv, os, threading, calendar, sqlite3, json, sys
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "4.4.0"
+APP_VERSION = "4.5.0"
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 DB_FILE     = os.path.join(os.path.dirname(os.path.abspath(__file__)), "absensi.db")
 
@@ -102,12 +102,6 @@ def remap_anomalies(anomaly_recs, anchor_date, jam_masuk='08:00', jam_keluar='16
             nr['recovered'] = True; nr['orig_ts'] = r['timestamp']
             out.append(nr)
     return out
-
-# ── i18n ──────────────────────────────────────────────────────────────────────
-try:
-    from i18n import T, LANG
-except ImportError:
-    def T(key, lang='en', **kw): return key
 
 # ── Cross-platform opener ─────────────────────────────────────────────────────
 import subprocess as _sp
@@ -736,8 +730,9 @@ class DeviceInfoDialog(tk.Toplevel):
 
 
 class UserManagerDialog(tk.Toplevel):
-    def __init__(self, parent, users):
+    def __init__(self, parent, users, app=None):
         super().__init__(parent)
+        self.app=app
         self.title("Users on Device"); self.resizable(False,False); self.grab_set()
         tk.Label(self,text="  Users registered on eFace10",font=("Segoe UI",11,"bold"),
                  bg='#1A56DB',fg='white').pack(fill='x',pady=4)
@@ -749,11 +744,51 @@ class UserManagerDialog(tk.Toplevel):
         sb=ttk.Scrollbar(fr,orient='vertical',command=self.tree.yview)
         self.tree.config(yscrollcommand=sb.set)
         self.tree.pack(side='left'); sb.pack(side='right',fill='y')
+        self.tree.bind('<<TreeviewSelect>>',self._on_select)
+
+        # edit row — add/rename/delete users on the device itself
+        ef=tk.Frame(self); ef.pack(fill='x',padx=8,pady=(2,0))
+        ttk.Label(ef,text='UID:').pack(side='left')
+        self.uid_var=tk.StringVar()
+        ttk.Entry(ef,textvariable=self.uid_var,width=6).pack(side='left',padx=(2,8))
+        ttk.Label(ef,text='Name:').pack(side='left')
+        self.name_var=tk.StringVar()
+        ttk.Entry(ef,textvariable=self.name_var,width=20).pack(side='left',padx=2)
+        ttk.Button(ef,text='💾 Add / Rename',command=self._save_user).pack(side='left',padx=6)
+        ttk.Button(ef,text='🗑 Delete',command=self._delete_user).pack(side='left')
+        tk.Label(self,text='Face/fingerprint enrollment is done on the device itself.',
+                 font=('Segoe UI',8),fg='#888').pack(anchor='w',padx=10)
+
+        bf=tk.Frame(self); bf.pack(pady=6)
+        self.total_lbl=ttk.Label(bf); self.total_lbl.pack(side='left',padx=10)
+        ttk.Button(bf,text='Close',command=self.destroy).pack(side='right',padx=10)
+        self._fill(users)
+
+    def _fill(self,users):
+        self.tree.delete(*self.tree.get_children())
         for u in users:
             self.tree.insert('','end',values=(u['uid'],u['nama'],u.get('card_id','')))
-        bf=tk.Frame(self); bf.pack(pady=6)
-        ttk.Label(bf,text=f"Total: {len(users)} users").pack(side='left',padx=10)
-        ttk.Button(bf,text='Close',command=self.destroy).pack(side='right',padx=10)
+        self.total_lbl.config(text=f"Total: {len(users)} users")
+
+    def _on_select(self,_=None):
+        sel=self.tree.selection()
+        if sel:
+            v=self.tree.item(sel[0],'values')
+            self.uid_var.set(v[0]); self.name_var.set(v[1])
+
+    def _save_user(self):
+        uid=self.uid_var.get().strip(); name=self.name_var.get().strip()
+        if not uid.isdigit() or not name:
+            messagebox.showwarning('Invalid','UID must be a number and name cannot be empty.',parent=self); return
+        if self.app: self.app.device_user_save(uid,name,self)
+
+    def _delete_user(self):
+        uid=self.uid_var.get().strip()
+        if not uid.isdigit():
+            messagebox.showwarning('Invalid','Select a user or enter a UID first.',parent=self); return
+        if not messagebox.askyesno('Delete',f'Delete user {uid} from the DEVICE?\n'
+                                   'Face/fingerprint templates on the device are removed too.',parent=self): return
+        if self.app: self.app.device_user_delete(uid,self)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -774,11 +809,6 @@ class App(tk.Tk):
         self._build_ui()
         self._update_status()
         self._refresh_history()
-        # Cleanup leftover _old.exe from previous update
-        try:
-            from updater import cleanup_old_exe
-            cleanup_old_exe()
-        except ImportError: pass
         # Cleanup leftover _old.exe from previous update
         try:
             from updater import cleanup_old_exe
@@ -837,6 +867,7 @@ class App(tk.Tk):
         ttk.Button(btn_frame,text='🔌 Test Connection',command=lambda:self._run(self._do_test)).pack(side='left',padx=(0,4))
         ttk.Button(btn_frame,text='ℹ Device Info',command=lambda:self._run(self._do_info)).pack(side='left',padx=4)
         ttk.Button(btn_frame,text='👤 Manage Users',command=lambda:self._run(self._do_users)).pack(side='left',padx=4)
+        ttk.Button(btn_frame,text='♻ Restart',command=self._confirm_restart).pack(side='left',padx=4)
 
         # Alur kerja — step boxes
         fw=ttk.LabelFrame(left,text='Workflow',padding=8)
@@ -853,17 +884,12 @@ class App(tk.Tk):
         def arrow(col):
             tk.Label(fw,text='→',font=('Segoe UI',12),fg='#94A3B8',bg='#F1F5F9').grid(row=0,column=col,padx=1)
 
-        f1=mkstep(0,1,'Set Time','Sync RTC\nto PC')
-        self.btn_time=ttk.Button(f1,text='🕐 Set Time',width=13,command=lambda:self._run(self._do_settime))
-        self.btn_time.pack(pady=(3,6),padx=6)
-        arrow(1)
-
-        f2=mkstep(2,2,'Pull Data','Fetch log\n& save DB')
+        f2=mkstep(2,1,'Pull Data','Fetch log\n& save DB')
         self.btn_pull=ttk.Button(f2,text='📥 Pull Data',width=13,command=lambda:self._run(self._do_pull))
         self.btn_pull.pack(pady=(3,6),padx=6)
         arrow(3)
 
-        f3=mkstep(4,3,'Filter','Month &\nyear')
+        f3=mkstep(4,2,'Filter','Month &\nyear')
         ff=tk.Frame(f3,bg='#EFF6FF'); ff.pack(padx=4,pady=2)
         now=datetime.now()
         tk.Label(ff,text='Month:',font=('Segoe UI',7),bg='#EFF6FF').grid(row=0,column=0,sticky='w')
@@ -880,7 +906,7 @@ class App(tk.Tk):
         ttk.Radiobutton(f3,text='Cache',variable=self.src_var,value='cache').pack(anchor='w',padx=6)
         arrow(5)
 
-        f4=mkstep(6,4,'Preview','Generate &\nview report')
+        f4=mkstep(6,3,'Preview','Generate &\nview report')
         self.btn_report=ttk.Button(f4,text='📊 Preview',width=13,command=lambda:self._run(self._do_report))
         self.btn_report.pack(pady=(3,6),padx=6)
 
@@ -907,7 +933,7 @@ class App(tk.Tk):
         ttk.Label(left,textvariable=self.status_var,relief='sunken',anchor='w',
                   font=('Segoe UI',8)).pack(fill='x',padx=8,pady=(0,4))
 
-        self._btns=[self.btn_time,self.btn_pull,self.btn_report,self.btn_all]
+        self._btns=[self.btn_pull,self.btn_report,self.btn_all]
 
         # ══ RIGHT PANEL — Preview + History ════════════════════════════════════
         right=tk.Frame(paned,bg='#F8FAFC')
@@ -1062,9 +1088,8 @@ class App(tk.Tk):
     def _on_lang_change(self,_=None):
         lang=self.lang_var.get()
         self.cfg['lang']=lang; save_config(self.cfg)
-        msg=("Language set to English. Restart to apply." if lang=='en'
-             else "Bahasa diubah ke Indonesia. Restart untuk menerapkan.")
-        messagebox.showinfo("Language",msg)
+        # lang only affects generated reports — applies on next Preview, no restart needed
+        self._log(f'✓ Report language: {"English" if lang=="en" else "Indonesia"}')
 
     def _confirm_clear(self):
         if messagebox.askyesno('Confirm',
@@ -1297,16 +1322,47 @@ class App(tk.Tk):
             for u in ulist: self.cfg['user_map'][str(u['uid'])]=u['nama']
             save_config(self.cfg)
             self._log(f'✓ {len(ulist)} users found and synced to config')
-            self.after(0,lambda:UserManagerDialog(self,ulist))
+            self.after(0,lambda:UserManagerDialog(self,ulist,app=self))
         finally: conn.disconnect()
 
-    def _do_settime(self):
-        self._log('Setting device time ...')
+    def _device_user_op(self, op, dlg, done_msg):
+        """Run op(conn) on the device, then re-fetch users into the dialog."""
         conn=self._get_conn()
         try:
-            now=datetime.now(); conn.set_time(now)
-            self._log(f'✓ Device time → {now.strftime("%Y-%m-%d %H:%M:%S")}')
+            op(conn)
+            users=conn.get_users()
+            ulist=[{'uid':int(u.user_id),'nama':u.name,'card_id':getattr(u,'card','') or ''} for u in users]
+            db_upsert_users(ulist)
+            for u in ulist: self.cfg['user_map'][str(u['uid'])]=u['nama']
+            save_config(self.cfg)
+            self._log(done_msg)
+            self.after(0,lambda:dlg._fill(ulist))
         finally: conn.disconnect()
+
+    def device_user_save(self, uid, name, dlg):
+        def op(conn):
+            ex=next((u for u in conn.get_users() if str(u.user_id)==uid),None)
+            if ex:  # rename, keep everything else (privilege, card, password)
+                conn.set_user(uid=ex.uid,name=name,privilege=ex.privilege,
+                              password=ex.password or '',group_id=ex.group_id or '',
+                              user_id=uid,card=ex.card or 0)
+            else:
+                conn.set_user(name=name,user_id=uid)
+        self._run(lambda:self._device_user_op(op,dlg,f'✓ User {uid} = {name} saved to device'))
+
+    def device_user_delete(self, uid, dlg):
+        self._run(lambda:self._device_user_op(
+            lambda conn:conn.delete_user(user_id=uid),dlg,f'✓ User {uid} deleted from device'))
+
+    def _confirm_restart(self):
+        if messagebox.askyesno('Restart','Restart the device now?\nIt will be offline for ~1 minute.'):
+            self._run(self._do_restart)
+
+    def _do_restart(self):
+        self._log('Restarting device ...')
+        conn=self._get_conn()
+        conn.restart()   # device drops the link; no disconnect() after this
+        self._log('✓ Restart command sent — device back in ~1 minute')
 
     def _do_pull(self):
         self._log('Pulling attendance data from device ...')
@@ -1367,19 +1423,14 @@ class App(tk.Tk):
         finally: conn.disconnect()
 
     def _check_clock(self, conn):
-        """Warn loudly if the device RTC has drifted from the PC clock."""
+        """Auto-sync device RTC to the PC clock when it has drifted."""
         try:
             dev=conn.get_time(); pc=datetime.now()
             skew=abs((dev-pc).total_seconds())
             if skew>120:
                 mins=int(skew//60)
-                self._log(f'⚠ CLOCK SKEW: device={dev} — off by ~{mins} min from PC. Run "Set Time"!')
-                self.after(0,lambda:self.conn_lbl.config(text='● clock off!',fg='#dc2626'))
-                self.after(0,lambda:messagebox.showwarning('Clock Skew / Jam Meleset',
-                    f'Jam mesin meleset ~{mins} menit dari PC.\n\n'
-                    f'Device : {dev}\nPC     : {pc.strftime("%Y-%m-%d %H:%M:%S")}\n\n'
-                    f'Klik "Set Time" untuk sinkron sekarang, jika tidak absen berikutnya '
-                    f'akan tersimpan dengan tanggal salah.'))
+                conn.set_time(datetime.now())
+                self._log(f'⚠ Device clock was off by ~{mins} min (was {dev}) — auto-synced to PC time')
             else:
                 self._log(f'✓ Device clock OK ({dev})')
             return skew
@@ -1426,8 +1477,7 @@ class App(tk.Tk):
         self._generate_and_show(rows,label)
 
     def _do_all(self):
-        self._do_settime()
-        self._do_pull()
+        self._do_pull()   # clock auto-syncs inside pull
         self._do_report()
 
     def _check_update(self):
@@ -1505,7 +1555,7 @@ class App(tk.Tk):
             self.after(0,lambda:messagebox.showerror(
                 "Update Failed",
                 f"Failed to install update:\n\n{msg}\n\n"
-                f"Download manually:\ngithub.com/nikokevin29/zkteco-utility/releases"))
+                f"Download manually:\ngithub.com/xbanana29/zkteco-utility/releases"))
 
         download_and_replace(url,
             on_progress=on_progress,

@@ -8,7 +8,6 @@ pip install pyzk openpyxl pyinstaller --quiet
 pyinstaller --onefile --windowed \
   --name "ZKTeco_Utility_Linux" \
   --add-data "app_icon.png:." \
-  --add-data "i18n.py:." \
   --collect-all openpyxl \
   --collect-all zk \
   --hidden-import openpyxl \

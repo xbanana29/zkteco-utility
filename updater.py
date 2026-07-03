@@ -16,7 +16,7 @@ import threading
 import urllib.request
 from pathlib import Path
 
-GITHUB_OWNER = "nikokevin29"
+GITHUB_OWNER = "xbanana29"
 GITHUB_REPO  = "zkteco-utility"
 API_URL      = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
 

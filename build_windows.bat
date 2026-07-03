@@ -15,7 +15,6 @@ pyinstaller --onefile --windowed ^
   --icon "app_icon.ico" ^
   --add-data "app_icon.ico;." ^
   --add-data "app_icon.png;." ^
-  --add-data "i18n.py;." ^
   --collect-all openpyxl ^
   --collect-all zk ^
   --hidden-import openpyxl ^
