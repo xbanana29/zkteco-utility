@@ -1,0 +1,2 @@
+# Headless agent only (no GUI)
+pyzk>=0.9

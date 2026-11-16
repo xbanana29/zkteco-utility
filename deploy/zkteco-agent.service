@@ -1,0 +1,22 @@
+[Unit]
+Description=ZKTeco attendance pull + VST cloud sync
+Documentation=file:///home/xbanana/zkteco-agent/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=xbanana
+Group=xbanana
+WorkingDirectory=/home/xbanana/zkteco-agent
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/home/xbanana/zkteco-agent/.env
+ExecStart=/home/xbanana/zkteco-agent/.venv/bin/python zkteco_cli.py daemon --config /home/xbanana/zkteco-agent/config.json
+Restart=always
+RestartSec=30
+# Soft stop: finish sleep/cycle
+KillSignal=SIGTERM
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target
