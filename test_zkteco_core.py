@@ -297,6 +297,91 @@ class TestCheckClock(unittest.TestCase):
         self.assertTrue(conn.enabled)
 
 
+class _Resp:
+    def __init__(self, body):
+        self.body = body
+
+    def read(self):
+        return self.body.encode("utf-8")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+class TestSyncButton(_TmpDb):
+    def setUp(self):
+        super().setUp()
+        self.cfg.update(
+            cloud_api_url="https://vst.example/api/attendance",
+            cloud_api_token="t" * 64,
+        )
+
+    def test_poll_reads_sync_requested(self):
+        seen = []
+
+        def fake_urlopen(req, timeout=0):
+            seen.append((req.full_url, req.get_method(), req.headers.get("User-agent")))
+            return _Resp('{"sync_requested": true, "requested_at": "2026-11-18T18:30:00+07:00"}')
+
+        with mock.patch.object(core.urllib.request, "urlopen", fake_urlopen):
+            self.assertTrue(core.poll_sync_request(self.cfg))
+        url, method, ua = seen[0]
+        self.assertEqual(url, "https://vst.example/api/attendance/sync-request")
+        self.assertEqual(method, "GET")
+        # VST reads the agent version from the User-Agent.
+        self.assertTrue(ua.startswith("ZKTeco-Agent/"))
+
+    def test_poll_errors_mean_no_request(self):
+        def boom(req, timeout=0):
+            raise core.urllib.error.URLError("offline")
+
+        with mock.patch.object(core.urllib.request, "urlopen", boom):
+            self.assertFalse(core.poll_sync_request(self.cfg))
+        with mock.patch.object(core.urllib.request, "urlopen", lambda r, timeout=0: _Resp("[]")):
+            self.assertFalse(core.poll_sync_request(self.cfg))
+
+    def test_poller_rate_limited(self):
+        calls = []
+        poller = core._SyncPoller(self.cfg, True)
+        with mock.patch.object(core, "poll_sync_request", lambda cfg: calls.append(1) or False):
+            poller.requested()
+            poller.requested()
+        self.assertEqual(len(calls), 1)
+        self.assertFalse(core._SyncPoller(self.cfg, False).requested())
+
+    def test_live_session_ends_on_sync_button(self):
+        conn = _FakeLiveConn([None, None])
+        poller = core._SyncPoller(self.cfg, True)
+        with mock.patch.object(core, "connect_device", return_value=conn), \
+                mock.patch.object(core, "check_clock"), \
+                mock.patch.object(core, "poll_sync_request", return_value=True):
+            reason = core.live_session(self.cfg, datetime(2099, 1, 1), poller=poller)
+        self.assertEqual(reason, "sync")
+        self.assertTrue(conn.cleaned)
+
+    def test_daemon_posts_everything_after_sync_button(self):
+        modes = []
+        rounds = iter([(True, True), (True, False)])
+
+        def fake_pull(cfg, do_cloud=None, sync="all"):
+            modes.append(sync)
+            return {"ok": True, "cloud": {"ok": True}}
+
+        def fake_live(cfg, deadline, no_cloud, stopped, poller):
+            return next(rounds, (True, False))
+
+        stop = lambda: len(modes) >= 3  # noqa: E731
+        with mock.patch.object(core, "pull_attendance", fake_pull), \
+                mock.patch.object(core, "_live_until", fake_live), \
+                mock.patch.object(core, "history_sync_due_at", return_value=datetime(2099, 1, 1)):
+            core.live_daemon_loop(self.cfg, stop_flag=stop)
+        # Normal hourly pull, then the forced POST for the button, then normal.
+        self.assertEqual(modes, ["new", "all", "new"])
+
+
 class TestCliParser(unittest.TestCase):
     def test_no_live_flag(self):
         import zkteco_cli
