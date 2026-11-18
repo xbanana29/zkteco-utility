@@ -21,7 +21,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 log = logging.getLogger("zkteco")
 
-APP_VERSION = "5.3.1-agent"
+APP_VERSION = "5.4.0-agent"
 ANOMALY_YEAR = 2000
 LEAVE_TYPES = ("izin", "cuti", "dinas", "sakit")
 
@@ -596,6 +596,51 @@ def cloud_credentials_ok(cfg) -> dict:
         raise RuntimeError(f"Network: {e.reason}") from e
 
 
+SYNC_POLL_S = 30  # how often the daemon asks VST whether "Sync" was pressed
+
+
+def poll_sync_request(cfg) -> bool:
+    """Ask VST whether an admin pressed the dashboard "Sync" button.
+
+    GET {base}/sync-request also marks the agent as online on VST; without
+    it the dashboard reports this agent as unable to handle the button.
+    Network or server errors return False: the hourly pull still runs.
+    """
+    base = normalize_cloud_base_url(cfg.get("cloud_api_url") or "")
+    token = normalize_cloud_token(cfg.get("cloud_api_token") or "")
+    if not base or not token:
+        return False
+    req = urllib.request.Request(
+        base + "/sync-request", method="GET", headers=_cloud_headers(token)
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+            data = json.loads(raw) if raw else {}
+    except Exception as e:
+        log.debug("Cek tombol Sync VST gagal: %s", e)
+        return False
+    return bool(isinstance(data, dict) and data.get("sync_requested"))
+
+
+class _SyncPoller:
+    """Rate-limits poll_sync_request to once per SYNC_POLL_S."""
+
+    def __init__(self, cfg, enabled: bool):
+        self.cfg = cfg
+        self.enabled = enabled
+        self.next_at = 0.0
+
+    def requested(self) -> bool:
+        if not self.enabled or time.monotonic() < self.next_at:
+            return False
+        self.next_at = time.monotonic() + SYNC_POLL_S
+        if poll_sync_request(self.cfg):
+            log.info("☁ Tombol Sync ditekan di VST — tarik penuh sekarang")
+            return True
+        return False
+
+
 def cloud_sync(cfg, punches=None, year=None, month=None) -> dict:
     if not cfg.get("cloud_sync_enabled"):
         raise RuntimeError("Cloud sync disabled (cloud_sync_enabled=false).")
@@ -1009,12 +1054,20 @@ def history_sync_due_at(cfg, now: datetime) -> datetime:
     return at
 
 
-def _sleep_until(deadline: datetime, stopped: Callable[[], bool]) -> None:
+def _sleep_until(
+    deadline: datetime,
+    stopped: Callable[[], bool],
+    poller: Optional["_SyncPoller"] = None,
+) -> bool:
+    """Sleep until `deadline` or stop. True = the VST Sync button was pressed."""
     while not stopped():
+        if poller and poller.requested():
+            return True
         left = (deadline - datetime.now()).total_seconds()
         if left <= 0:
-            return
+            return False
         time.sleep(min(5, left))
+    return False
 
 
 def _live_flush(cfg, rows) -> None:
@@ -1030,13 +1083,15 @@ def live_session(
     until: datetime,
     no_cloud: bool = False,
     stop_flag: Optional[Callable[[], bool]] = None,
+    poller: Optional[_SyncPoller] = None,
 ) -> str:
     """Hold one live_capture connection until `until`; POST each new punch.
 
-    Returns why it ended: "deadline", "stop", or "anomaly" (a punch dated
-    year 2000 = device clock reset; it is NOT sent, the caller runs a full
-    pull, which fixes the clock and applies the anomaly recovery).
-    Device/network errors propagate to the caller.
+    Returns why it ended: "deadline", "stop", "sync" (the VST dashboard
+    Sync button was pressed; the caller runs a full pull and POSTs it), or
+    "anomaly" (a punch dated year 2000 = device clock reset; it is NOT sent,
+    the caller runs a full pull, which fixes the clock and applies the
+    anomaly recovery). Device/network errors propagate to the caller.
     """
     um = {int(k): v for k, v in (cfg.get("user_map") or {}).items()}
     want_cloud = not no_cloud and bool(cfg.get("cloud_sync_enabled"))
@@ -1085,6 +1140,9 @@ def live_session(
                     conn.end_live_capture = True
                 elif datetime.now() >= until:
                     conn.end_live_capture = True
+                elif poller and poller.requested():
+                    reason = "sync"
+                    conn.end_live_capture = True
     finally:
         try:
             conn.disconnect()
@@ -1096,14 +1154,25 @@ def live_session(
 
 
 def _live_until(
-    cfg, deadline: datetime, no_cloud: bool, stopped: Callable[[], bool]
-) -> bool:
-    """Run live sessions until `deadline`. False = live capture is not working."""
+    cfg,
+    deadline: datetime,
+    no_cloud: bool,
+    stopped: Callable[[], bool],
+    poller: Optional[_SyncPoller] = None,
+) -> Tuple[bool, bool]:
+    """Run live sessions until `deadline`.
+
+    Returns (live_ok, sync_requested). live_ok False = live capture is not
+    working; sync_requested True = end early, the VST Sync button was pressed.
+    """
     fails = 0
     while not stopped() and datetime.now() < deadline:
         try:
-            if live_session(cfg, deadline, no_cloud, stopped) == "anomaly":
-                return True
+            reason = live_session(cfg, deadline, no_cloud, stopped, poller)
+            if reason == "anomaly":
+                return True, False
+            if reason == "sync":
+                return True, True
             fails = 0
         except Exception as e:
             fails += 1
@@ -1113,12 +1182,12 @@ def _live_until(
                 log.warning(
                     "Live capture tidak jalan — tarik penuh tiap %s mnt sampai pulih", poll
                 )
-                _sleep_until(min(deadline, datetime.now() + timedelta(minutes=poll)), stopped)
-                return False
-            _sleep_until(
-                min(deadline, datetime.now() + timedelta(seconds=LIVE_RETRY_S)), stopped
-            )
-    return True
+                wake = min(deadline, datetime.now() + timedelta(minutes=poll))
+                return False, _sleep_until(wake, stopped, poller)
+            wake = min(deadline, datetime.now() + timedelta(seconds=LIVE_RETRY_S))
+            if _sleep_until(wake, stopped, poller):
+                return True, True
+    return True, False
 
 
 def live_daemon_loop(
@@ -1140,16 +1209,23 @@ def live_daemon_loop(
         cfg.get("history_sync_time"),
         not no_cloud and bool(cfg.get("cloud_sync_enabled")),
     )
+    poller = _SyncPoller(cfg, not no_cloud and bool(cfg.get("cloud_sync_enabled")))
     live_ok = True
+    sync_requested = False
     backoff = 30
     while not stopped():
         now = datetime.now()
         mode = "history" if now >= history_sync_due_at(cfg, now) else "new"
+        if sync_requested and mode == "new":
+            # Always POST so VST clears the request and the dashboard
+            # sees the sync finish, even when there is nothing new.
+            mode = "all"
         try:
             res = pull_attendance(cfg, do_cloud=False if no_cloud else None, sync=mode)
             cloud = res.get("cloud")
             if mode == "history" and (cloud is None or cloud.get("ok") is not False):
                 agent_state_set("last_history_sync_date", now.date().isoformat())
+            sync_requested = False
             backoff = 30
         except Exception as e:
             log.exception("Tarik penuh gagal: %s", e)
@@ -1162,7 +1238,7 @@ def live_daemon_loop(
         hist_at = history_sync_due_at(cfg, now)
         if hist_at > now:
             deadline = min(deadline, hist_at)
-        live_ok = _live_until(cfg, deadline, no_cloud, stopped)
+        live_ok, sync_requested = _live_until(cfg, deadline, no_cloud, stopped, poller)
     log.info("Daemon stop requested")
 
 
@@ -1190,6 +1266,7 @@ def daemon_loop(
         mins,
         not no_cloud and bool(cfg.get("cloud_sync_enabled")),
     )
+    poller = _SyncPoller(cfg, not no_cloud and bool(cfg.get("cloud_sync_enabled")))
     backoff = 30
     while True:
         if stop_flag and stop_flag():
@@ -1205,12 +1282,15 @@ def daemon_loop(
             time.sleep(sleep_s)
             backoff = min(backoff * 2, 600)
             continue
-        # sleep in chunks so stop is responsive
+        # sleep in chunks so stop is responsive; run_once POSTs every device
+        # record, so a pressed VST Sync button only needs to cut the sleep.
         remaining = mins * 60
         while remaining > 0:
             if stop_flag and stop_flag():
                 log.info("Daemon stop requested during sleep")
                 return
+            if poller.requested():
+                break
             chunk = min(5, remaining)
             time.sleep(chunk)
             remaining -= chunk
