@@ -21,7 +21,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 log = logging.getLogger("zkteco")
 
-APP_VERSION = "5.3.0-agent"
+APP_VERSION = "5.3.1-agent"
 ANOMALY_YEAR = 2000
 LEAVE_TYPES = ("izin", "cuti", "dinas", "sakit")
 
@@ -661,22 +661,61 @@ def connect_device(cfg):
     return zk.connect()
 
 
+CLOCK_SKEW_MAX_S = 120
+
+
+def _set_device_time(conn, when: datetime) -> None:
+    """Set the device clock with the device disabled.
+
+    The eFace10 (firmware Ver 6.60) acknowledges CMD_SET_TIME while it is
+    enabled but keeps running on the old clock; seen on 2026-11-18 after a
+    power cut, when a plain set_time left it on year 2000. Disabling the
+    device first makes the new time stick. The device is always re-enabled,
+    otherwise it stops accepting punches.
+    """
+    try:
+        conn.disable_device()
+    except Exception as e:
+        log.warning("disable_device before set_time failed: %s", e)
+    try:
+        conn.set_time(when)
+    finally:
+        try:
+            conn.enable_device()
+        except Exception as e:
+            log.error("enable_device after set_time failed: %s", e)
+
+
 def check_clock(conn, set_if_skew=True) -> Optional[float]:
+    """Return the device clock skew in seconds, correcting it if too large.
+
+    After a correction the clock is read back; the returned skew is the one
+    measured after the fix, so a value above CLOCK_SKEW_MAX_S means the
+    device refused the new time twice.
+    """
     try:
         dev = conn.get_time()
-        pc = datetime.now()
-        skew = abs((dev - pc).total_seconds())
-        if skew > 120 and set_if_skew:
-            mins = int(skew // 60)
-            conn.set_time(datetime.now())
-            log.warning(
-                "Device clock off by ~%s min (was %s) — auto-synced to PC",
-                mins,
-                dev,
-            )
-        else:
+        skew = abs((dev - datetime.now()).total_seconds())
+        if skew <= CLOCK_SKEW_MAX_S or not set_if_skew:
             log.info("Device clock OK (%s, skew %.0fs)", dev, skew)
-        return skew
+            return skew
+        for attempt in (1, 2):
+            _set_device_time(conn, datetime.now())
+            after = conn.get_time()
+            new_skew = abs((after - datetime.now()).total_seconds())
+            if new_skew <= CLOCK_SKEW_MAX_S:
+                log.warning(
+                    "Device clock off by ~%s min (was %s) — synced to PC (now %s)",
+                    int(skew // 60),
+                    dev,
+                    after,
+                )
+                return new_skew
+            log.warning(
+                "Device clock still %s after set_time (attempt %s)", after, attempt
+            )
+        log.error("Device clock could not be corrected; still %s", after)
+        return new_skew
     except Exception as e:
         log.warning("Clock check skipped: %s", e)
         return None

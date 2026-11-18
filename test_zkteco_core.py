@@ -237,6 +237,66 @@ class TestLiveSession(_TmpDb):
         self.assertTrue(conn.cleaned)
 
 
+class _ClockConn:
+    """eFace10 behaviour: set_time only sticks while the device is disabled."""
+
+    def __init__(self, now, sticky_when_enabled=False, never=False):
+        self.now = now
+        self.enabled = True
+        self.sticky_when_enabled = sticky_when_enabled
+        self.never = never
+        self.calls = []
+
+    def get_time(self):
+        return self.now
+
+    def disable_device(self):
+        self.calls.append("disable")
+        self.enabled = False
+
+    def enable_device(self):
+        self.calls.append("enable")
+        self.enabled = True
+
+    def set_time(self, when):
+        self.calls.append("set")
+        if not self.never and (not self.enabled or self.sticky_when_enabled):
+            self.now = when
+        return True
+
+
+class TestCheckClock(unittest.TestCase):
+    def test_reset_clock_set_with_device_disabled(self):
+        conn = _ClockConn(datetime(2000, 2, 1, 6, 17))
+        skew = core.check_clock(conn)
+        self.assertLess(skew, core.CLOCK_SKEW_MAX_S)
+        self.assertEqual(conn.calls, ["disable", "set", "enable"])
+        self.assertTrue(conn.enabled)
+
+    def test_small_skew_left_alone(self):
+        conn = _ClockConn(datetime.now())
+        core.check_clock(conn)
+        self.assertEqual(conn.calls, [])
+
+    def test_refused_time_retried_then_reported(self):
+        conn = _ClockConn(datetime(2000, 2, 1), never=True)
+        skew = core.check_clock(conn)
+        self.assertGreater(skew, core.CLOCK_SKEW_MAX_S)
+        self.assertEqual(conn.calls.count("set"), 2)
+        # Device must never be left disabled: it would stop taking punches.
+        self.assertTrue(conn.enabled)
+
+    def test_enable_runs_even_if_set_time_fails(self):
+        conn = _ClockConn(datetime(2000, 2, 1))
+
+        def boom(when):
+            raise OSError("timeout")
+
+        conn.set_time = boom
+        self.assertIsNone(core.check_clock(conn))
+        self.assertTrue(conn.enabled)
+
+
 class TestCliParser(unittest.TestCase):
     def test_no_live_flag(self):
         import zkteco_cli
